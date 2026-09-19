@@ -13,7 +13,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}, options: { silent?: boolean } = {}): Promise<T> {
   const token = sessionStorage.getItem(tokenKey)
   const headers = new Headers(init.headers)
   if (init.body) headers.set('Content-Type', 'application/json')
@@ -24,7 +24,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     response = await fetch(`/api/v1${path}`, { ...init, headers })
   } catch {
     const error = new ApiError('无法连接分析服务，请检查服务状态', 0, 'NETWORK_ERROR')
-    window.dispatchEvent(new CustomEvent('api:error', { detail: error.message }))
+    if (!options.silent) window.dispatchEvent(new CustomEvent('api:error', { detail: error.message }))
     throw error
   }
   const payload = (await response.json().catch(() => ({}))) as ApiEnvelope<T> & ApiFailure
@@ -39,7 +39,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
       sessionStorage.removeItem(tokenKey)
       window.dispatchEvent(new Event('auth:expired'))
     }
-    window.dispatchEvent(new CustomEvent('api:error', { detail: error.message + (error.requestId ? ' · ' + error.requestId : '') }))
+    if (!options.silent) window.dispatchEvent(new CustomEvent('api:error', { detail: error.message + (error.requestId ? ' · ' + error.requestId : '') }))
     throw error
   }
   return payload.data

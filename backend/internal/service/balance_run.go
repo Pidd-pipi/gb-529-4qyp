@@ -20,6 +20,8 @@ import (
 
 const balanceAlgorithmVersion = "mass-balance-v1.0"
 
+const minReleaseNoteLength = 6
+
 type BalanceService struct {
 	repo            *repository.BalanceRepository
 	tankRepo        *repository.TankRepository
@@ -67,11 +69,15 @@ func (s *BalanceService) Run(ctx context.Context, request dto.RunBalanceRequest,
 	if err != nil {
 		return model.BalanceRun{}, err
 	}
+	release, err := freezeBoundaryRelease(opening, closing, request.OpeningReleaseNote, request.ClosingReleaseNote)
+	if err != nil {
+		return model.BalanceRun{}, err
+	}
 	transfers, err := s.transferRepo.ConfirmedForPeriod(ctx, tank.ID, start, end)
 	if err != nil {
 		return model.BalanceRun{}, err
 	}
-	calculation, snapshotJSON, evidenceJSON, err := calculateBalanceRun(tank, opening, closing, transfers, start, end)
+	calculation, snapshotJSON, evidenceJSON, err := calculateBalanceRun(tank, opening, closing, transfers, start, end, release)
 	if err != nil {
 		return model.BalanceRun{}, err
 	}
@@ -82,6 +88,12 @@ func (s *BalanceService) Run(ctx context.Context, request dto.RunBalanceRequest,
 		BalanceStatus:      constants.BalanceCalculating,
 		InputSnapshotJSON:  datatypes.JSON(snapshotJSON),
 		EvidenceJSON:       datatypes.JSON(evidenceJSON),
+		OpeningSnapshotID:  opening.ID,
+		ClosingSnapshotID:  closing.ID,
+		OpeningQualityFlag: opening.QualityFlag,
+		ClosingQualityFlag: closing.QualityFlag,
+		OpeningReleaseNote: release.OpeningNote,
+		ClosingReleaseNote: release.ClosingNote,
 		OpeningMassKG:      calculation.OpeningMassKG,
 		ClosingMassKG:      calculation.ClosingMassKG,
 		NetTransferKG:      calculation.NetTransferKG,
@@ -102,6 +114,77 @@ func (s *BalanceService) Run(ctx context.Context, request dto.RunBalanceRequest,
 	return run, nil
 }
 
+// boundaryRelease 保存随运行固化的边界快照放行依据。
+type boundaryRelease struct {
+	OpeningNote string
+	ClosingNote string
+}
+
+// freezeBoundaryRelease 校验并固化边界快照放行依据：suspect 快照必须附带放行依据，
+// good 快照沿用原流程（忽略并清空多余依据）；invalid 快照在边界选择阶段已被排除。
+// 校验失败时只返回错误，调用方尚未写入任何记录，本次运行不会留下半条数据。
+func freezeBoundaryRelease(opening, closing model.MeasurementSnapshot, openingNote, closingNote string) (boundaryRelease, error) {
+	release := boundaryRelease{
+		OpeningNote: strings.TrimSpace(openingNote),
+		ClosingNote: strings.TrimSpace(closingNote),
+	}
+	if err := requireReleaseNote("opening", opening, release.OpeningNote); err != nil {
+		return boundaryRelease{}, err
+	}
+	if err := requireReleaseNote("closing", closing, release.ClosingNote); err != nil {
+		return boundaryRelease{}, err
+	}
+	if opening.QualityFlag != constants.QualitySuspect {
+		release.OpeningNote = ""
+	}
+	if closing.QualityFlag != constants.QualitySuspect {
+		release.ClosingNote = ""
+	}
+	return release, nil
+}
+
+func requireReleaseNote(boundary string, snapshot model.MeasurementSnapshot, note string) error {
+	if snapshot.QualityFlag != constants.QualitySuspect {
+		return nil
+	}
+	label := "期初"
+	if boundary == "closing" {
+		label = "期末"
+	}
+	if len([]rune(note)) < minReleaseNoteLength {
+		return api.WithDetails(api.NewError(422, "BOUNDARY_RELEASE_REQUIRED", label+"快照质量为 suspect，必须填写放行依据（至少 6 个字符）"), map[string]any{
+			"boundary": boundary, "snapshot_id": snapshot.ID, "quality_flag": snapshot.QualityFlag,
+		})
+	}
+	if len([]rune(note)) > 1000 {
+		return api.WithDetails(api.NewError(422, "BOUNDARY_RELEASE_TOO_LONG", label+"放行依据不能超过 1000 个字符"), map[string]any{
+			"boundary": boundary, "snapshot_id": snapshot.ID,
+		})
+	}
+	return nil
+}
+
+func (s *BalanceService) BoundaryPreview(ctx context.Context, tankID uint, start, end time.Time) (dto.BoundaryPreviewResponse, error) {
+	start, end = start.UTC(), end.UTC()
+	if !end.After(start) {
+		return dto.BoundaryPreviewResponse{}, api.NewError(422, "INVALID_BALANCE_PERIOD", "平衡期间结束时间必须晚于开始时间")
+	}
+	tank, err := s.tankRepo.Get(ctx, tankID)
+	if err != nil {
+		return dto.BoundaryPreviewResponse{}, err
+	}
+	opening, closing, err := s.measurementRepo.BoundarySnapshots(ctx, tank.ID, start, end)
+	if err != nil {
+		return dto.BoundaryPreviewResponse{}, err
+	}
+	return dto.BoundaryPreviewResponse{
+		Opening:                opening,
+		Closing:                closing,
+		OpeningReleaseRequired: opening.QualityFlag == constants.QualitySuspect,
+		ClosingReleaseRequired: closing.QualityFlag == constants.QualitySuspect,
+	}, nil
+}
+
 type calculatedBalance struct {
 	OpeningMassKG   float64
 	ClosingMassKG   float64
@@ -114,14 +197,23 @@ type calculatedBalance struct {
 	DeviationLevel  constants.DeviationLevel
 }
 
-type balanceEvidence struct {
-	AlgorithmVersion string                   `json:"algorithm_version"`
-	Equation         map[string]float64       `json:"equation"`
-	Uncertainty      dto.UncertaintyBreakdown `json:"uncertainty"`
-	SafetyBoundary   string                   `json:"safety_boundary"`
+type boundaryReleaseEvidence struct {
+	SnapshotID  uint                  `json:"snapshot_id"`
+	MeasuredAt  time.Time             `json:"measured_at"`
+	QualityFlag constants.QualityFlag `json:"quality_flag"`
+	Released    bool                  `json:"released"`
+	ReleaseNote string                `json:"release_note,omitempty"`
 }
 
-func calculateBalanceRun(tank model.StorageTank, opening, closing model.MeasurementSnapshot, transfers []model.TransferOperation, start, end time.Time) (calculatedBalance, []byte, []byte, error) {
+type balanceEvidence struct {
+	AlgorithmVersion string                             `json:"algorithm_version"`
+	Equation         map[string]float64                 `json:"equation"`
+	Uncertainty      dto.UncertaintyBreakdown           `json:"uncertainty"`
+	BoundaryRelease  map[string]boundaryReleaseEvidence `json:"boundary_release"`
+	SafetyBoundary   string                             `json:"safety_boundary"`
+}
+
+func calculateBalanceRun(tank model.StorageTank, opening, closing model.MeasurementSnapshot, transfers []model.TransferOperation, start, end time.Time, release boundaryRelease) (calculatedBalance, []byte, []byte, error) {
 	inflows, outflows := make([]float64, 0), make([]float64, 0)
 	uncertaintyInputs := []balance.UncertaintyInput{
 		{Source: "opening_snapshot", EntityID: opening.ID, MassKG: opening.CalculatedLiquidMassKG, UncertaintyPct: opening.MeasurementUncertaintyPct},
@@ -178,7 +270,17 @@ func calculateBalanceRun(tank model.StorageTank, opening, closing model.Measurem
 			"closing_mass_kg":                  closing.CalculatedLiquidMassKG,
 			"estimated_bog_and_unexplained_kg": deviation,
 		},
-		Uncertainty:    breakdown,
+		Uncertainty: breakdown,
+		BoundaryRelease: map[string]boundaryReleaseEvidence{
+			"opening": {
+				SnapshotID: opening.ID, MeasuredAt: opening.MeasuredAt, QualityFlag: opening.QualityFlag,
+				Released: opening.QualityFlag == constants.QualitySuspect, ReleaseNote: release.OpeningNote,
+			},
+			"closing": {
+				SnapshotID: closing.ID, MeasuredAt: closing.MeasuredAt, QualityFlag: closing.QualityFlag,
+				Released: closing.QualityFlag == constants.QualitySuspect, ReleaseNote: release.ClosingNote,
+			},
+		},
 		SafetyBoundary: "未解释差异仅为工程分析结果，不直接认定为泄漏或安全事件。",
 	}
 	inputSnapshot := map[string]any{
@@ -190,6 +292,10 @@ func calculateBalanceRun(tank model.StorageTank, opening, closing model.Measurem
 		"opening_snapshot":    opening,
 		"closing_snapshot":    closing,
 		"confirmed_transfers": transfers,
+		"boundary_release": map[string]any{
+			"opening_release_note": release.OpeningNote,
+			"closing_release_note": release.ClosingNote,
+		},
 	}
 	snapshotJSON, err := json.Marshal(inputSnapshot)
 	if err != nil {

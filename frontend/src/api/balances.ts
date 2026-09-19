@@ -1,9 +1,15 @@
 import { request, requestPage } from './client'
-import type { BalanceRun, BalanceRunInput, BalanceStatus, UncertaintyBreakdown } from '../types/balance'
+import type { BalanceRun, BalanceRunInput, BalanceStatus, BoundaryPreview, UncertaintyBreakdown } from '../types/balance'
 
 export const listBalances = (tankId?: number) =>
   requestPage<BalanceRun>(`/balances?page=1&page_size=100${tankId ? '&tank_id=' + tankId : ''}`)
 export const getBalance = (id: number) => request<BalanceRun>(`/balances/${id}`)
+export const getBoundaryPreview = (tankId: number, periodStart: string, periodEnd: string) =>
+  request<BoundaryPreview>(
+    `/balances/boundary-preview?tank_id=${tankId}&period_start=${encodeURIComponent(periodStart)}&period_end=${encodeURIComponent(periodEnd)}`,
+    {},
+    { silent: true }
+  )
 export const runBalance = (input: BalanceRunInput) =>
   request<BalanceRun>('/balances/run', { method: 'POST', body: JSON.stringify(input) })
 export const submitBalance = (id: number, version: number) =>

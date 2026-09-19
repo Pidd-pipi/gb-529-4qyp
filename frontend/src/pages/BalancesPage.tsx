@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Form, Input, Modal, Select, Table, Tag } from 'antd'
 import { CheckCircle2, Play, RefreshCw, Send, XCircle } from 'lucide-react'
+import { getBoundaryPreview } from '../api/balances'
+import { BoundaryReleasePanel } from '../components/common/BoundaryReleasePanel'
 import { EvidenceBreakdownPanel } from '../components/common/EvidenceBreakdownPanel'
 import { MassBalanceWaterfall } from '../components/common/MassBalanceWaterfall'
 import { PageHeader } from '../components/common/PageHeader'
+import { QualityFlagBadge } from '../components/common/QualityFlagBadge'
 import { useAuth } from '../hooks/useAuth'
 import { useBalanceRun } from '../hooks/useBalanceRun'
 import { useTankStore } from '../stores/tankStore'
-import type { BalanceRun, BalanceRunInput, BalanceStatus } from '../types/balance'
+import type { BalanceRun, BalanceRunInput, BalanceStatus, BoundaryPreview } from '../types/balance'
 import { deviationLabels } from '../types/deviation'
 import { dateTime, kg, localInputDate, number } from '../utils/format'
 
@@ -23,9 +26,33 @@ export function BalancesPage() {
   const [runOpen, setRunOpen] = useState(false)
   const [reviewTarget, setReviewTarget] = useState<'accepted' | 'rejected'>('accepted')
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [preview, setPreview] = useState<BoundaryPreview | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
   const [runForm] = Form.useForm<BalanceRunInput>()
   const [reviewForm] = Form.useForm<{ note: string }>()
+  const watchTank = Form.useWatch('tank_id', runForm)
+  const watchStart = Form.useWatch('period_start', runForm)
+  const watchEnd = Form.useWatch('period_end', runForm)
   useEffect(() => { void Promise.all([store.load(), tanks.load()]) }, [])
+  useEffect(() => {
+    if (!runOpen || !watchTank || !watchStart || !watchEnd) {
+      setPreview(null)
+      setPreviewError(null)
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      getBoundaryPreview(watchTank, new Date(watchStart).toISOString(), new Date(watchEnd).toISOString())
+        .then((result) => { if (!cancelled) { setPreview(result); setPreviewError(null) } })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setPreview(null)
+            setPreviewError(error instanceof Error ? error.message : '边界快照查询失败')
+          }
+        })
+    }, 350)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [runOpen, watchTank, watchStart, watchEnd])
   const selected = useMemo(() => store.items.find((item) => item.id === store.selectedId) ?? store.items[0], [store.items, store.selectedId])
   const openRun = () => {
     runForm.setFieldsValue({ tank_id: tanks.items[0]?.id })
@@ -35,7 +62,9 @@ export function BalancesPage() {
     await store.run({
       tank_id: values.tank_id,
       period_start: new Date(values.period_start).toISOString(),
-      period_end: new Date(values.period_end).toISOString()
+      period_end: new Date(values.period_end).toISOString(),
+      opening_release_note: values.opening_release_note?.trim() || undefined,
+      closing_release_note: values.closing_release_note?.trim() || undefined
     })
     setRunOpen(false)
   }
@@ -79,6 +108,7 @@ export function BalancesPage() {
               </div>
             )}
           </div>
+          <BoundaryReleasePanel run={selected} />
           <EvidenceBreakdownPanel run={selected} />
         </div>
         <aside className="run-rail">
@@ -126,7 +156,40 @@ export function BalancesPage() {
             <Form.Item name="period_start" label="期间开始" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>
             <Form.Item name="period_end" label="期间结束" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>
           </div>
-          <Alert className="form-alert" type="warning" showIcon message="系统将选择期间边界有效快照并固化当前罐容系数；既有结果不会被覆盖。" />
+          {previewError && <Alert className="form-alert" type="error" showIcon message={previewError} />}
+          {preview && (
+            <div className="boundary-preview">
+              <div className="boundary-line">
+                <span>期初快照 #{preview.opening.id} · {dateTime(preview.opening.measured_at)}</span>
+                <QualityFlagBadge value={preview.opening.quality_flag} />
+              </div>
+              <div className="boundary-line">
+                <span>期末快照 #{preview.closing.id} · {dateTime(preview.closing.measured_at)}</span>
+                <QualityFlagBadge value={preview.closing.quality_flag} />
+              </div>
+            </div>
+          )}
+          {preview?.opening_release_required && (
+            <Form.Item
+              name="opening_release_note"
+              label="期初快照放行依据（suspect 必填）"
+              preserve={false}
+              rules={[{ required: true, min: 6, max: 1000, message: '请填写 6-1000 个字符的放行依据' }]}
+            >
+              <Input.TextArea rows={2} maxLength={1000} showCount placeholder="说明该 suspect 快照仍可作为平衡边界的工程依据" />
+            </Form.Item>
+          )}
+          {preview?.closing_release_required && (
+            <Form.Item
+              name="closing_release_note"
+              label="期末快照放行依据（suspect 必填）"
+              preserve={false}
+              rules={[{ required: true, min: 6, max: 1000, message: '请填写 6-1000 个字符的放行依据' }]}
+            >
+              <Input.TextArea rows={2} maxLength={1000} showCount placeholder="说明该 suspect 快照仍可作为平衡边界的工程依据" />
+            </Form.Item>
+          )}
+          <Alert className="form-alert" type="warning" showIcon message="系统将选择期间边界有效快照并固化当前罐容系数；suspect 边界必须填写放行依据，缺失时本次运行将被拒绝且不留记录；既有结果不会被覆盖。" />
           <Button type="primary" htmlType="submit" icon={<Play size={16} />} loading={store.working} block>执行计算</Button>
         </Form>
       </Modal>

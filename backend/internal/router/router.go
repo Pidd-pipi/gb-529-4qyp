@@ -57,6 +57,7 @@ func New(log *slog.Logger, authService *service.AuthService, handlers Handlers, 
 	protected.POST("/transfers/:id/status", middleware.RBAC(constants.RoleProcessAnalyst, constants.RoleAdmin), handlers.Transfer.Transition)
 
 	protected.GET("/balances", handlers.Balance.List)
+	protected.GET("/balances/boundary-preview", handlers.Balance.BoundaryPreview)
 	protected.GET("/balances/:id", handlers.Balance.Get)
 	protected.GET("/balances/:id/uncertainty", handlers.Balance.Uncertainty)
 	protected.POST("/balances/run", runLimiter.Middleware("balance-run"), middleware.RBAC(constants.RoleProcessAnalyst, constants.RoleAdmin), handlers.Balance.Run)

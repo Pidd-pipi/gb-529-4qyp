@@ -15,6 +15,12 @@ type BalanceRun struct {
 	PeriodEnd          time.Time                `json:"period_end" gorm:"not null;index"`
 	BalanceStatus      constants.BalanceStatus  `json:"balance_status" gorm:"type:varchar(24);not null;check:balance_status IN ('queued','calculating','pending_review','accepted','rejected','invalidated')"`
 	InputSnapshotJSON  datatypes.JSON           `json:"input_snapshot_json" gorm:"type:jsonb;not null"`
+	OpeningSnapshotID  uint                     `json:"opening_snapshot_id" gorm:"not null;default:0;index"`
+	ClosingSnapshotID  uint                     `json:"closing_snapshot_id" gorm:"not null;default:0;index"`
+	OpeningQualityFlag constants.QualityFlag    `json:"opening_quality_flag" gorm:"type:varchar(16);not null;default:''"`
+	ClosingQualityFlag constants.QualityFlag    `json:"closing_quality_flag" gorm:"type:varchar(16);not null;default:''"`
+	OpeningReleaseNote string                   `json:"opening_release_note" gorm:"size:1000;not null;default:''"`
+	ClosingReleaseNote string                   `json:"closing_release_note" gorm:"size:1000;not null;default:''"`
 	OpeningMassKG      float64                  `json:"opening_mass_kg" gorm:"not null"`
 	ClosingMassKG      float64                  `json:"closing_mass_kg" gorm:"not null"`
 	NetTransferKG      float64                  `json:"net_transfer_kg" gorm:"not null"`

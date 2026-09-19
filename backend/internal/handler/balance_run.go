@@ -3,6 +3,8 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -60,6 +62,42 @@ func (h *BalanceHandler) Run(c *gin.Context) {
 		return
 	}
 	api.Success(c, http.StatusCreated, item)
+}
+
+func (h *BalanceHandler) BoundaryPreview(c *gin.Context) {
+	tankID, err := strconv.ParseUint(c.Query("tank_id"), 10, 32)
+	if err != nil || tankID == 0 {
+		api.Fail(c, api.NewError(400, "INVALID_TANK_ID", "必须提供有效的储罐 ID"))
+		return
+	}
+	start, ok := requiredTimeQuery(c, "period_start")
+	if !ok {
+		return
+	}
+	end, ok := requiredTimeQuery(c, "period_end")
+	if !ok {
+		return
+	}
+	preview, err := h.service.BoundaryPreview(c.Request.Context(), uint(tankID), start, end)
+	if err != nil {
+		api.Fail(c, err)
+		return
+	}
+	api.Success(c, http.StatusOK, preview)
+}
+
+func requiredTimeQuery(c *gin.Context, name string) (time.Time, bool) {
+	value := strings.TrimSpace(c.Query(name))
+	if value == "" {
+		api.Fail(c, api.WithDetails(api.NewError(400, "BALANCE_PERIOD_REQUIRED", "必须提供平衡期间起止时间"), map[string]any{"field": name}))
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		api.Fail(c, api.WithDetails(api.NewError(400, "INVALID_TIME_FILTER", "期间时间必须使用 RFC3339 格式"), map[string]any{"field": name}))
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
 }
 
 func (h *BalanceHandler) Submit(c *gin.Context) {

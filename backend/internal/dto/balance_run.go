@@ -4,12 +4,22 @@ import (
 	"time"
 
 	"lng-boiloff-gas-balance/backend/internal/constants"
+	"lng-boiloff-gas-balance/backend/internal/model"
 )
 
 type RunBalanceRequest struct {
-	TankID      uint       `json:"tank_id" binding:"required"`
-	PeriodStart *time.Time `json:"period_start" binding:"required"`
-	PeriodEnd   *time.Time `json:"period_end" binding:"required"`
+	TankID             uint       `json:"tank_id" binding:"required"`
+	PeriodStart        *time.Time `json:"period_start" binding:"required"`
+	PeriodEnd          *time.Time `json:"period_end" binding:"required"`
+	OpeningReleaseNote string     `json:"opening_release_note" binding:"omitempty,max=1000"`
+	ClosingReleaseNote string     `json:"closing_release_note" binding:"omitempty,max=1000"`
+}
+
+type BoundaryPreviewResponse struct {
+	Opening                model.MeasurementSnapshot `json:"opening"`
+	Closing                model.MeasurementSnapshot `json:"closing"`
+	OpeningReleaseRequired bool                      `json:"opening_release_required"`
+	ClosingReleaseRequired bool                      `json:"closing_release_required"`
 }
 
 type SubmitBalanceRequest struct {
