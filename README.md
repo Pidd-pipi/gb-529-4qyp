@@ -40,7 +40,8 @@ docker compose ps
 - 储罐参数：维护名义容积、有效液位、参考密度、温度膨胀系数和多项式罐容曲线；更新使用 `version` 乐观锁。
 - 计量快照：记录液位、液温、汽相压力、密度、不确定度和质量标记；写入时计算罐容、修正密度及液相质量，原值不可覆盖。
 - 物理转移：记录实际流入/流出、时间段、计量质量和物理参考；同一储罐的未取消时间段不得重叠。
-- 平衡运行：选择期初和期末有效快照，汇总期间已确认转移，保存完整输入、系数版本、方程和不确定度证据。
+- 平衡运行：选择期初和期末有效快照，汇总期间已确认转移，保存完整输入、系数版本、方程和不确定度证据。期初或期末快照质量为 `suspect` 时，分析员必须填写质量放行依据（6-1000 字）；`good` 快照沿用原流程。依据缺失只拒绝本次运行，不写入半成品记录。
+- 边界质量放行：运行建立时固化两条边界快照 ID、质量标记与放行依据（结构化列 + 证据 JSON 双份固化）；新增快照不会改写旧运行，重算始终另建记录。待复核或已接受的运行不可再改，复核页可回读被放行快照、放行依据与偏差关系。
 - 独立复核：`queued -> calculating -> pending_review -> accepted | rejected | invalidated`，接受/驳回只允许复核员或管理员。
 - 审计追踪：参数、快照、转移、运行、提交和复核均保存 request ID、操作者及前后摘要。
 - 横切能力：JWT、RBAC、全局错误、结构化访问日志、request ID、panic recovery、本地令牌桶限流和优雅停机。
@@ -189,6 +190,8 @@ node scripts/api-smoke.mjs
 
 - `OPENING_SNAPSHOT_MISSING`：期间开始时点前没有 `good` 或 `suspect` 快照。
 - `CLOSING_SNAPSHOT_MISSING`：期间内没有晚于期初的有效期末快照。
+- `OPENING_RELEASE_BASIS_REQUIRED` / `CLOSING_RELEASE_BASIS_REQUIRED`：期初/期末快照质量为 `suspect`，必须填写质量放行依据；本次运行被拒绝且不产生任何记录。
+- `INVALID_RELEASE_BASIS`：放行依据为空或超过 1000 字。
 - `TRANSFER_TIME_OVERLAP`：同一储罐已有时间重叠且未取消的物理转移。
 - `TANK_VERSION_CONFLICT` / `BALANCE_VERSION_CONFLICT`：数据被其他请求更新，刷新后使用新版本重试。
 - 后端未 healthy：运行 `docker compose logs backend`，检查 JWT、数据库配置和 PostgreSQL 健康状态。

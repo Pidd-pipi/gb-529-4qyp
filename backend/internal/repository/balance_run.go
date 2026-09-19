@@ -74,6 +74,8 @@ func (r *BalanceRepository) CreateCalculated(ctx context.Context, run *model.Bal
 			"status": run.BalanceStatus, "estimated_bog_kg": run.EstimatedBOGKG,
 			"uncertainty_kg": run.UncertaintyKG, "deviation_level": run.DeviationLevel,
 			"coefficient_version": run.CoefficientVersion,
+			"opening_snapshot_id": run.OpeningSnapshotID, "closing_snapshot_id": run.ClosingSnapshotID,
+			"opening_release_basis": run.OpeningReleaseBasis, "closing_release_basis": run.ClosingReleaseBasis,
 		})
 		if err := tx.Create(&calculatedAudit).Error; err != nil {
 			return fmt.Errorf("audit balance calculation: %w", err)

@@ -33,7 +33,7 @@ func TestCalculateBalanceRunProducesReplayEvidence(t *testing.T) {
 		{ID: 20, OperationType: "inflow", MeasuredMassKG: 250000, MeasurementUncertaintyPct: 0.2},
 		{ID: 21, OperationType: "outflow", MeasuredMassKG: 90000, MeasurementUncertaintyPct: 0.25},
 	}
-	calculated, snapshot, evidence, err := calculateBalanceRun(tank, opening, closing, transfers, start, end)
+	calculated, snapshot, evidence, err := calculateBalanceRun(tank, opening, closing, "", "", transfers, start, end)
 	if err != nil {
 		t.Fatalf("calculate run: %v", err)
 	}

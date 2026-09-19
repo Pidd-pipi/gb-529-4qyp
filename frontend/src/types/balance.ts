@@ -1,7 +1,21 @@
 import type { DeviationLevel } from './deviation'
+import type { QualityFlag } from './measurement'
 import type { StorageTank } from './tank'
 
 export type BalanceStatus = 'queued' | 'calculating' | 'pending_review' | 'accepted' | 'rejected' | 'invalidated'
+
+export interface BoundaryRelease {
+  snapshot_id: number
+  measured_at: string
+  quality_flag: QualityFlag
+  released: boolean
+  release_basis: string
+}
+
+export interface BoundaryReleases {
+  opening: BoundaryRelease
+  closing: BoundaryRelease
+}
 
 export interface BalanceRun {
   id: number
@@ -10,6 +24,10 @@ export interface BalanceRun {
   period_end: string
   balance_status: BalanceStatus
   input_snapshot_json: Record<string, unknown>
+  opening_snapshot_id: number
+  closing_snapshot_id: number
+  opening_release_basis: string
+  closing_release_basis: string
   opening_mass_kg: number
   closing_mass_kg: number
   net_transfer_kg: number
@@ -52,6 +70,7 @@ export interface BalanceEvidence {
   algorithm_version?: string
   equation?: Record<string, number>
   uncertainty?: UncertaintyBreakdown
+  boundary_releases?: BoundaryReleases
   safety_boundary?: string
 }
 
@@ -59,4 +78,6 @@ export interface BalanceRunInput {
   tank_id: number
   period_start: string
   period_end: string
+  opening_release_basis?: string
+  closing_release_basis?: string
 }

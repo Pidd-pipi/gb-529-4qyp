@@ -67,33 +67,41 @@ func (s *BalanceService) Run(ctx context.Context, request dto.RunBalanceRequest,
 	if err != nil {
 		return model.BalanceRun{}, err
 	}
+	openingBasis, closingBasis, err := resolveBoundaryReleases(request, opening, closing)
+	if err != nil {
+		return model.BalanceRun{}, err
+	}
 	transfers, err := s.transferRepo.ConfirmedForPeriod(ctx, tank.ID, start, end)
 	if err != nil {
 		return model.BalanceRun{}, err
 	}
-	calculation, snapshotJSON, evidenceJSON, err := calculateBalanceRun(tank, opening, closing, transfers, start, end)
+	calculation, snapshotJSON, evidenceJSON, err := calculateBalanceRun(tank, opening, closing, openingBasis, closingBasis, transfers, start, end)
 	if err != nil {
 		return model.BalanceRun{}, err
 	}
 	run := model.BalanceRun{
-		TankID:             tank.ID,
-		PeriodStart:        start,
-		PeriodEnd:          end,
-		BalanceStatus:      constants.BalanceCalculating,
-		InputSnapshotJSON:  datatypes.JSON(snapshotJSON),
-		EvidenceJSON:       datatypes.JSON(evidenceJSON),
-		OpeningMassKG:      calculation.OpeningMassKG,
-		ClosingMassKG:      calculation.ClosingMassKG,
-		NetTransferKG:      calculation.NetTransferKG,
-		EstimatedBOGKG:     calculation.EstimatedBOGKG,
-		UncertaintyKG:      calculation.UncertaintyKG,
-		IntervalLowerKG:    calculation.IntervalLowerKG,
-		IntervalUpperKG:    calculation.IntervalUpperKG,
-		DeviationPct:       calculation.DeviationPct,
-		DeviationLevel:     calculation.DeviationLevel,
-		CoefficientVersion: tank.CoefficientVersion,
-		Version:            2,
-		CreatedBy:          actor.UserID,
+		TankID:              tank.ID,
+		PeriodStart:         start,
+		PeriodEnd:           end,
+		BalanceStatus:       constants.BalanceCalculating,
+		InputSnapshotJSON:   datatypes.JSON(snapshotJSON),
+		OpeningSnapshotID:   opening.ID,
+		ClosingSnapshotID:   closing.ID,
+		OpeningReleaseBasis: openingBasis,
+		ClosingReleaseBasis: closingBasis,
+		EvidenceJSON:        datatypes.JSON(evidenceJSON),
+		OpeningMassKG:       calculation.OpeningMassKG,
+		ClosingMassKG:       calculation.ClosingMassKG,
+		NetTransferKG:       calculation.NetTransferKG,
+		EstimatedBOGKG:      calculation.EstimatedBOGKG,
+		UncertaintyKG:       calculation.UncertaintyKG,
+		IntervalLowerKG:     calculation.IntervalLowerKG,
+		IntervalUpperKG:     calculation.IntervalUpperKG,
+		DeviationPct:        calculation.DeviationPct,
+		DeviationLevel:      calculation.DeviationLevel,
+		CoefficientVersion:  tank.CoefficientVersion,
+		Version:             2,
+		CreatedBy:           actor.UserID,
 	}
 	if err := s.repo.CreateCalculated(ctx, &run, actor); err != nil {
 		return model.BalanceRun{}, err
@@ -118,10 +126,50 @@ type balanceEvidence struct {
 	AlgorithmVersion string                   `json:"algorithm_version"`
 	Equation         map[string]float64       `json:"equation"`
 	Uncertainty      dto.UncertaintyBreakdown `json:"uncertainty"`
+	BoundaryReleases BoundaryReleases         `json:"boundary_releases"`
 	SafetyBoundary   string                   `json:"safety_boundary"`
 }
 
-func calculateBalanceRun(tank model.StorageTank, opening, closing model.MeasurementSnapshot, transfers []model.TransferOperation, start, end time.Time) (calculatedBalance, []byte, []byte, error) {
+// BoundaryReleases 记录期初/期末快照被放行的依据，复核页据此回读审计信息。
+type BoundaryReleases struct {
+	Opening dto.BoundaryRelease `json:"opening"`
+	Closing dto.BoundaryRelease `json:"closing"`
+}
+
+// resolveBoundaryReleases 在任何数据写入之前完成边界质量放行校验：
+// suspect 快照必须填写放行依据；good 快照沿用原流程并忽略多余依据。
+func resolveBoundaryReleases(request dto.RunBalanceRequest, opening, closing model.MeasurementSnapshot) (string, string, error) {
+	openingBasis := strings.TrimSpace(request.OpeningReleaseBasis)
+	if opening.QualityFlag == constants.QualitySuspect && openingBasis == "" {
+		return "", "", api.NewError(422, "OPENING_RELEASE_BASIS_REQUIRED", "期初快照质量为可疑，必须填写质量放行依据后才能运行平衡")
+	}
+	if opening.QualityFlag != constants.QualitySuspect {
+		openingBasis = ""
+	}
+	closingBasis := strings.TrimSpace(request.ClosingReleaseBasis)
+	if closing.QualityFlag == constants.QualitySuspect && closingBasis == "" {
+		return "", "", api.NewError(422, "CLOSING_RELEASE_BASIS_REQUIRED", "期末快照质量为可疑，必须填写质量放行依据后才能运行平衡")
+	}
+	if closing.QualityFlag != constants.QualitySuspect {
+		closingBasis = ""
+	}
+	if len([]rune(openingBasis)) > 1000 || len([]rune(closingBasis)) > 1000 {
+		return "", "", api.NewError(422, "INVALID_RELEASE_BASIS", "质量放行依据不能超过 1000 个字符")
+	}
+	return openingBasis, closingBasis, nil
+}
+
+func boundaryRelease(snapshot model.MeasurementSnapshot, basis string) dto.BoundaryRelease {
+	return dto.BoundaryRelease{
+		SnapshotID:   snapshot.ID,
+		MeasuredAt:   snapshot.MeasuredAt,
+		QualityFlag:  snapshot.QualityFlag,
+		Released:     snapshot.QualityFlag == constants.QualitySuspect && basis != "",
+		ReleaseBasis: basis,
+	}
+}
+
+func calculateBalanceRun(tank model.StorageTank, opening, closing model.MeasurementSnapshot, openingBasis, closingBasis string, transfers []model.TransferOperation, start, end time.Time) (calculatedBalance, []byte, []byte, error) {
 	inflows, outflows := make([]float64, 0), make([]float64, 0)
 	uncertaintyInputs := []balance.UncertaintyInput{
 		{Source: "opening_snapshot", EntityID: opening.ID, MassKG: opening.CalculatedLiquidMassKG, UncertaintyPct: opening.MeasurementUncertaintyPct},
@@ -178,18 +226,24 @@ func calculateBalanceRun(tank model.StorageTank, opening, closing model.Measurem
 			"closing_mass_kg":                  closing.CalculatedLiquidMassKG,
 			"estimated_bog_and_unexplained_kg": deviation,
 		},
-		Uncertainty:    breakdown,
+		Uncertainty: breakdown,
+		BoundaryReleases: BoundaryReleases{
+			Opening: boundaryRelease(opening, openingBasis),
+			Closing: boundaryRelease(closing, closingBasis),
+		},
 		SafetyBoundary: "未解释差异仅为工程分析结果，不直接认定为泄漏或安全事件。",
 	}
 	inputSnapshot := map[string]any{
-		"algorithm_version":   balanceAlgorithmVersion,
-		"coefficient_version": tank.CoefficientVersion,
-		"period_start":        start,
-		"period_end":          end,
-		"tank":                tank,
-		"opening_snapshot":    opening,
-		"closing_snapshot":    closing,
-		"confirmed_transfers": transfers,
+		"algorithm_version":     balanceAlgorithmVersion,
+		"coefficient_version":   tank.CoefficientVersion,
+		"period_start":          start,
+		"period_end":            end,
+		"tank":                  tank,
+		"opening_snapshot":      opening,
+		"closing_snapshot":      closing,
+		"opening_release_basis": openingBasis,
+		"closing_release_basis": closingBasis,
+		"confirmed_transfers":   transfers,
 	}
 	snapshotJSON, err := json.Marshal(inputSnapshot)
 	if err != nil {

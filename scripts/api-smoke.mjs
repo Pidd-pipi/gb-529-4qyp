@@ -261,6 +261,145 @@ async function main() {
     token: reviewer,
   });
   if (balances.meta.total < 2) fail("balance history is incomplete", balances);
+
+  // 边界快照质量放行：suspect 期末缺少依据时拒绝本次运行，且不留半成品记录。
+  const suspectTank = await api("create suspect-boundary tank", proxy, "/api/v1/tanks", {
+    method: "POST",
+    token: analyst,
+    body: { ...tankInput, tank_code: `QS-${unique}`, name: `Suspect release tank ${unique}` },
+    status: 201,
+  });
+  const suspectTankID = suspectTank.data.id;
+  await api("create suspect opening snapshot", proxy, "/api/v1/measurements", {
+    method: "POST",
+    token: analyst,
+    status: 201,
+    body: {
+      ...measurement,
+      tank_id: suspectTankID,
+      measured_at: "2026-07-01T00:30:00Z",
+      liquid_level_m: 10,
+      quality_flag: "good",
+      source_note: "Suspect flow opening gauge snapshot",
+    },
+  });
+  const suspectClosing = await api("create suspect closing snapshot", proxy, "/api/v1/measurements", {
+    method: "POST",
+    token: analyst,
+    status: 201,
+    body: {
+      ...measurement,
+      tank_id: suspectTankID,
+      measured_at: "2026-07-02T00:30:00Z",
+      liquid_level_m: 9.94,
+      quality_flag: "suspect",
+      source_note: "Suspect flow closing gauge snapshot pending calibration review",
+    },
+  });
+  await api("suspect run without release basis rejected", proxy, "/api/v1/balances/run", {
+    method: "POST",
+    token: analyst,
+    body: { tank_id: suspectTankID, period_start: periodStart, period_end: periodEnd },
+    status: 422,
+    errorCode: "CLOSING_RELEASE_BASIS_REQUIRED",
+  });
+  const rejectedListing = await api(
+    "rejected run leaves no record",
+    proxy,
+    `/api/v1/balances?tank_id=${suspectTankID}`,
+    { token: analyst },
+  );
+  if (rejectedListing.meta.total !== 0) {
+    fail("rejected suspect run must not leave a partial balance record", rejectedListing);
+  }
+
+  const releaseBasis = "08:00 液位计校准记录复核，温度漂移处于工艺允许范围，值班长签字放行。";
+  const releasedRun = await api("suspect run with release basis", proxy, "/api/v1/balances/run", {
+    method: "POST",
+    token: analyst,
+    status: 201,
+    body: {
+      tank_id: suspectTankID,
+      period_start: periodStart,
+      period_end: periodEnd,
+      closing_release_basis: releaseBasis,
+    },
+  });
+  if (
+    releasedRun.data.opening_snapshot_id === 0 ||
+    releasedRun.data.closing_snapshot_id !== suspectClosing.data.id ||
+    releasedRun.data.closing_release_basis !== releaseBasis ||
+    releasedRun.data.opening_release_basis !== ""
+  ) {
+    fail("created run did not freeze boundary snapshots and release basis", releasedRun);
+  }
+  const frozen = releasedRun.data.evidence_json?.boundary_releases;
+  if (
+    !frozen ||
+    !frozen.closing.released ||
+    frozen.closing.quality_flag !== "suspect" ||
+    frozen.closing.release_basis !== releaseBasis ||
+    frozen.closing.snapshot_id !== suspectClosing.data.id ||
+    frozen.opening.released
+  ) {
+    fail("evidence boundary release is incomplete", releasedRun.data.evidence_json);
+  }
+
+  const releasedSubmit = await api(
+    "released run submitted for review",
+    proxy,
+    `/api/v1/balances/${releasedRun.data.id}/submit`,
+    {
+      method: "POST",
+      token: analyst,
+      body: { version: releasedRun.data.version },
+    },
+  );
+  if (releasedSubmit.data.balance_status !== "pending_review") {
+    fail("released run did not enter pending_review", releasedSubmit);
+  }
+  const releasedAccepted = await api(
+    "released run accepted after independent review",
+    proxy,
+    `/api/v1/balances/${releasedRun.data.id}/review`,
+    {
+      method: "POST",
+      token: reviewer,
+      body: {
+        target_status: "accepted",
+        version: releasedSubmit.data.version,
+        review_note: "Release basis and deviation relationship verified, accepted.",
+      },
+    },
+  );
+  if (releasedAccepted.data.balance_status !== "accepted") {
+    fail("released run review acceptance failed", releasedAccepted);
+  }
+  // 刷新后回读：被放行快照、依据仍然可读；已接受结果再迁移必须被拒绝。
+  const reloaded = await api(
+    "released run readable after refresh",
+    proxy,
+    `/api/v1/balances/${releasedRun.data.id}`,
+    { token: reviewer },
+  );
+  if (
+    reloaded.data.closing_release_basis !== releaseBasis ||
+    reloaded.data.evidence_json?.boundary_releases?.closing?.snapshot_id !== suspectClosing.data.id
+  ) {
+    fail("frozen release basis is not readable after refresh", reloaded);
+  }
+  await api("accepted run cannot change again", proxy, `/api/v1/balances/${releasedRun.data.id}/review`, {
+    method: "POST",
+    token: reviewer,
+    status: 409,
+    errorCode: "INVALID_BALANCE_TRANSITION",
+    body: {
+      target_status: "rejected",
+      version: reloaded.data.version,
+      review_note: "Attempt to mutate an already accepted result.",
+    },
+  });
+
   const audits = await api(
     "audit query",
     proxy,

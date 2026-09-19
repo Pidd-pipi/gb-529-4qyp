@@ -7,9 +7,20 @@ import (
 )
 
 type RunBalanceRequest struct {
-	TankID      uint       `json:"tank_id" binding:"required"`
-	PeriodStart *time.Time `json:"period_start" binding:"required"`
-	PeriodEnd   *time.Time `json:"period_end" binding:"required"`
+	TankID              uint       `json:"tank_id" binding:"required"`
+	PeriodStart         *time.Time `json:"period_start" binding:"required"`
+	PeriodEnd           *time.Time `json:"period_end" binding:"required"`
+	OpeningReleaseBasis string     `json:"opening_release_basis"`
+	ClosingReleaseBasis string     `json:"closing_release_basis"`
+}
+
+// BoundaryRelease 固化在平衡证据中的边界快照质量放行记录。
+type BoundaryRelease struct {
+	SnapshotID   uint                  `json:"snapshot_id"`
+	MeasuredAt   time.Time             `json:"measured_at"`
+	QualityFlag  constants.QualityFlag `json:"quality_flag"`
+	Released     bool                  `json:"released"`
+	ReleaseBasis string                `json:"release_basis"`
 }
 
 type SubmitBalanceRequest struct {
